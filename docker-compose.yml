@@ -1,0 +1,176 @@
+version: '3.8'
+
+services:
+  mqtt:
+    # hostname: mqtt.local
+    image: eclipse-mosquitto:latest
+    container_name: mqtt
+    restart: always
+    ports:
+      - "8883:8883"
+      
+    volumes:
+      - ./mqtt/config:/mosquitto/config
+      - ./mqtt/data:/mosquitto/data
+      - ./mqtt/log:/mosquitto/log
+
+      - ./openssl-certs/mqtt-server.crt:/mosquitto/config/certs/mqtt-server.crt
+      - ./openssl-certs/mqtt-server.key:/mosquitto/config/certs/mqtt-server.key
+      - ./openssl-certs/rootCA.crt:/mosquitto/config/certs/rootCA.crt
+    networks:
+      - iot_net
+
+  # 2️⃣ Flask Web API (Đã ổn)
+  web:
+    image: python:3.11
+    build: ./web
+    container_name: web
+    working_dir: /app
+    volumes:
+      - ./web:/app
+      - ./openssl-certs/rootCA.crt:/app/certs/rootCA.crt
+    # command: bash -c "pip install -r requirements.txt && python app.py"
+    ports:
+      - "5000:5000"
+    depends_on:
+      - mqtt
+      - db
+    networks:
+      - iot_net
+
+  # 3️⃣ InfluxDB (Đã ổn)
+  db:
+    image: influxdb:2.7
+    container_name: influxdb
+    restart: always
+    ports:
+      - "8086:8086"
+    environment:
+      DOCKER_INFLUXDB_INIT_MODE: setup
+      DOCKER_INFLUXDB_INIT_USERNAME: admin
+      DOCKER_INFLUXDB_INIT_PASSWORD: admin123
+      DOCKER_INFLUXDB_INIT_ORG: MyHome
+      DOCKER_INFLUXDB_INIT_BUCKET: SensorData
+      DOCKER_INFLUXDB_INIT_ADMIN_TOKEN: mysecrettoken
+    volumes:
+      - ./db:/var/lib/influxdb2
+    networks:
+      - iot_net
+
+  # 4️⃣ Grafana Dashboard (Đã ổn)
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    restart: always
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+    volumes:
+      - ./grafana:/var/lib/grafana
+    depends_on:
+      - db
+    networks:
+      - iot_net
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:latest
+    container_name: keycloak
+    restart: always
+    command: start
+    environment:
+      # Chỉ định kết nối đến CSDL "db-keycloak"
+      KC_DB: postgres
+      KC_DB_URL_HOST: db-keycloak
+      KC_DB_URL_DATABASE: keycloak
+      KC_DB_USERNAME: keycloak
+      KC_DB_PASSWORD: some_secret_password
+      KC_HTTP_ENABLED: "true" # nếu dùng thật nên tắt
+      # Thông tin admin 
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: admin
+      KC_HOSTNAME_STRICT: "false"
+      KC_HOSTNAME_STRICT_HTTPS: "false"
+    ports:
+      - "8080:8080"
+    networks:
+      - iot_net
+    depends_on:
+      - db-keycloak 
+
+  # vault:
+  #   image: hashicorp/vault:1.21.0
+  #   container_name: vault
+  #   restart: unless-stopped
+  #   ports:
+  #     - "8200:8200"
+  #   volumes:
+  #     - ./vault/data:/vault/data
+  #     - ./vault/config/config.hcl:/vault/config/config.hcl   # Chỉ 1 file
+  #   command: server -config=/vault/config/config.hcl
+  #   cap_add:
+  #     - IPC_LOCK
+  #   environment:
+  #     - VAULT_ADDR=http://0.0.0.0:8200
+  #   healthcheck:
+  #     test: ["CMD", "vault", "status", "-format=json"]
+  #     interval: 10s
+  #     timeout: 5s
+  #     retries: 5
+  #   networks:
+  #     - iot_net
+
+  # 7️⃣ OPA (ĐÃ SỬA - Thêm volume cho policy)
+  opa:
+    image: openpolicyagent/opa:latest
+    container_name: opa
+    restart: always
+    # Ra lệnh cho OPA tải policy từ thư mục /policies
+    command: run --server /policies
+    ports:
+      - "8181:8181"
+    # Thêm volume để lưu trữ các tệp policy (.rego)
+    volumes:
+      - ./opa/policies:/policies
+    networks:
+      - iot_net
+
+
+  envoy:
+    image: envoyproxy/envoy:v1.30-latest
+    container_name: envoy
+    restart: always
+    ports:
+      - "8443:8443"   # HTTPS Gateway
+      - "9901:9901"   # Envoy Admin UI
+    volumes:
+      - ./envoy/envoy.yaml:/etc/envoy/envoy.yaml
+      - ./envoy/certs:/etc/envoy/certs
+    depends_on:
+      - opa
+      - web
+      - keycloak
+    networks:
+      - iot_net
+
+  #  CSDL cho Keycloak (Dịch vụ MỚI)
+  # Dịch vụ này dùng để lưu trữ vĩnh viễn dữ liệu của Keycloak
+  db-keycloak:
+    image: postgres:15
+    container_name: db-keycloak
+    restart: always
+    environment:
+      POSTGRES_DB: keycloak
+      POSTGRES_USER: keycloak
+      POSTGRES_PASSWORD: some_secret_password
+    volumes:
+      # Lưu dữ liệu CSDL vào thư mục ./keycloak-db trên máy thật
+      - ./keycloak-db:/var/lib/postgresql/data
+    networks:
+      - iot_net
+
+#  Mạng nội bộ kết nối tất cả container
+networks:
+  iot_net:
+    driver: bridge

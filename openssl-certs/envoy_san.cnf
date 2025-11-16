@@ -1,0 +1,10 @@
+authorityKeyIdentifier=keyid,issuer
+basicConstraints=CA:FALSE
+keyUsage = digitalSignature, keyEncipherment
+subjectAltName = @alt_names
+
+[alt_names]
+DNS.1 = envoy
+DNS.2 = localhost
+IP.1 = 127.0.0.1
+IP.2 = 192.168.245.1  # <--- THAY ĐỊA CHỈ IP MÁY CHỦ CỦA BẠN VÀO ĐÂY

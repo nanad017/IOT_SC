@@ -1,0 +1,141 @@
+# 1. ------------------
+# Cấu hình Admin UI (Để debug)
+# ------------------
+admin:
+  address:
+    socket_address:
+      address: 0.0.0.0
+      port_value: 9901 # Truy cập http://localhost:9901 để xem
+
+# 2. ------------------
+# Tài nguyên tĩnh (Listeners & Clusters)
+# ------------------
+static_resources:
+  listeners:
+  - name: listener_https
+    address:
+      socket_address: { address: 0.0.0.0, port_value: 8443 } # Envoy nghe cổng 8443 (HTTPS)
+    filter_chains:
+    - filters:
+      - name: envoy.filters.network.http_connection_manager
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+          stat_prefix: ingress_http
+
+          # --- BỘ LỌC HTTP (AuthZ, AuthN, Router) ---
+          http_filters:
+          # Filter 1: OPA Authorization (Kiểm tra phân quyền)
+          - name: envoy.filters.http.ext_authz
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthz
+              transport_api_version: V3
+              with_request_body:
+                max_request_bytes: 8192
+                allow_partial_message: true
+              failure_mode_allow: false # Nếu OPA sập, CHẶN tất cả
+              grpc_service:
+                envoy_grpc:
+                  cluster_name: opa_service # Phải khớp với tên cluster OPA
+                timeout: 0.5s
+
+          # Filter 2: JWT Authorization (Kiểm tra token người dùng)
+          - name: envoy.filters.http.jwt_authn
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.filters.http.jwt_authn.v3.JwtAuthentication
+              providers:
+                keycloak_provider: # Tên provider
+                  issuer: http://keycloak:8080/realms/IOT_Project # Địa chỉ Keycloak
+                  audiences:
+                    - account # Client ID trong Keycloak
+                  
+                  remote_jwks:
+                    http_uri:
+                      uri: http://keycloak:8080/realms/IOT_Project/protocol/openid-connect/certs
+                      cluster: keycloak_service # Phải khớp với tên cluster Keycloak
+                      timeout: 1s
+                  
+              rules:
+                - match: { prefix: "/api/user" } # Chỉ bắt JWT ở đường dẫn này
+                  requires:
+                    provider_name: keycloak_provider
+                  
+          # Filter 3: Router (Luôn để cuối cùng)
+          - name: envoy.filters.http.router
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router   
+          # -----------------------------------------------------------
+
+          # --- CẤU HÌNH TUYẾN ĐƯỜNG ---
+          route_config:
+            name: local_route
+            virtual_hosts:
+            - name: backend
+              domains: ["*"]
+              routes:
+              - match: { prefix: "/" }
+                route: { cluster: web_service } # Chuyển tất cả request đến 'web'
+
+      # --- CẤU HÌNH TLS/mTLS (SỬA Ở ĐÂY) ---
+      transport_socket:
+        name: envoy.transport_sockets.tls
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.DownstreamTlsContext
+          common_tls_context:
+            tls_certificates:
+              # ---- SỬA DÒNG NÀY ----
+            - certificate_chain: { filename: "/etc/envoy/certs/envoy-proxy.crt" }
+              # ---- SỬA DÒNG NÀY ----
+              private_key: { filename: "/etc/envoy/certs/envoy-proxy.key" }
+            validation_context:
+              trusted_ca:
+                # ---- SỬA DÒNG NÀY ----
+                filename: "/etc/envoy/certs/rootCA.crt" 
+              
+          # Bắt buộc ESP32 phải trình cert (Nếu bạn muốn mTLS)
+          # Tạm thời bạn có thể đặt là 'false' nếu chưa cấu hình cert cho ESP32
+          require_client_certificate: false # <--- TẠM THỜI ĐẶT LÀ 'false' CHO DỄ TEST
+      # -----------------------------------------------------------
+
+  # 3. ------------------
+  # Định nghĩa các Cluster (Dịch vụ backend)
+  # ------------------
+  clusters:
+  # Cluster 1: Dịch vụ Web Backend (nơi xử lý)
+  - name: web_service
+    connect_timeout: 0.25s
+    type: logical_dns
+    dns_lookup_family: V4_ONLY
+    load_assignment:
+      cluster_name: web_service
+      endpoints:
+      - lb_endpoints:
+        - endpoint:
+            address:
+              socket_address: { address: web, port_value: 5000 } # Trỏ vào container 'web'
+
+  # Cluster 2: Dịch vụ OPA (để hỏi ý kiến)
+  - name: opa_service
+    connect_timeout: 0.25s
+    type: logical_dns
+    dns_lookup_family: V4_ONLY
+    http2_protocol_options: {} # OPA dùng gRPC
+    load_assignment:
+      cluster_name: opa_service
+      endpoints:
+      - lb_endpoints:
+        - endpoint:
+            address:
+              socket_address: { address: opa, port_value: 8181 } # Trỏ vào container 'opa'
+
+  # Cluster 3: Dịch vụ Keycloak (để lấy public key)
+  - name: keycloak_service
+    connect_timeout: 1s
+    type: logical_dns
+    dns_lookup_family: V4_ONLY
+    load_assignment:
+      cluster_name: keycloak_service
+      endpoints:
+      - lb_endpoints:
+        - endpoint:
+            address:
+              socket_address: { address: keycloak, port_value: 8080 } # Trỏ vào container 'keycloak'
