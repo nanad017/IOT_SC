@@ -1,0 +1,17 @@
+[ req ]
+distinguished_name = dn
+req_extensions = v3_req
+prompt = no
+
+[ dn ]
+CN = mqtt
+
+[ v3_req ]
+subjectAltName = @alt_names
+keyUsage = digitalSignature
+extendedKeyUsage = serverAuth
+basicConstraints = CA:FALSE
+
+[ alt_names ]
+DNS.1 = mqtt
+IP.1  = 10.32.24.112

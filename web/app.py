@@ -31,13 +31,13 @@ except Exception as e:
 # ----------------------------
 MQTT_HOST = "mqtt"
 MQTT_PORT = 8883  # <--- SỬA CỔNG SANG 8883 (MQTTS)
-MQTT_USER = "admin"
-MQTT_PASS = "123456"
+# MQTT_USER = "admin"
+# MQTT_PASS = "123456"
 CA_CERT_PATH = "/app/certs/rootCA.crt"  # <--- Đường dẫn mount từ Docker YML
 
 # Khởi tạo MQTT Client
 mqtt_client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
-mqtt_client.username_pw_set(MQTT_USER, MQTT_PASS)
+# mqtt_client.username_pw_set(MQTT_USER, MQTT_PASS)
 
 def on_connect(client, userdata, flags, rc, properties):
     if rc == 0:
@@ -55,7 +55,12 @@ mqtt_client.on_disconnect = on_disconnect
 try:
     print(f"WEB: Đang bật MQTTS TLS...", flush=True)
     mqtt_client.tls_set(
-        ca_certs=CA_CERT_PATH,
+        # ca_certs=CA_CERT_PATH,
+        # cert_reqs=ssl.CERT_REQUIRED,
+        # tls_version=ssl.PROTOCOL_TLSv1_2
+        ca_certs="/app/certs/rootCA.crt",
+        certfile="/app/certs/web.crt",
+        keyfile="/app/certs/web.key",
         cert_reqs=ssl.CERT_REQUIRED,
         tls_version=ssl.PROTOCOL_TLSv1_2
     )
@@ -118,8 +123,8 @@ def user_control():
             return jsonify({"status": "error", "message": "Thiếu device_id hoặc action"}), 400
 
         # Gửi lệnh điều khiển qua MQTT
-        topic = f"devices/{device_id}/control"
-        payload = f"{{\"relay\": \"{action}\"}}"
+        topic = f"iot/device/{device_id}/control"
+        payload = f"{{\"cmd\": \"{action}\"}}"
         
         print(f"WEB: Gửi lệnh qua MQTT: Topic={topic}, Payload={payload}", flush=True)
         mqtt_client.publish(topic, payload)

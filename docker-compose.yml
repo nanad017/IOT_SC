@@ -28,7 +28,7 @@ services:
     working_dir: /app
     volumes:
       - ./web:/app
-      - ./openssl-certs/rootCA.crt:/app/certs/rootCA.crt
+      # - ./certweb:/app/certs/rootCA.crt
     # command: bash -c "pip install -r requirements.txt && python app.py"
     ports:
       - "5000:5000"
@@ -107,8 +107,7 @@ services:
   #     - "8200:8200"
   #   volumes:
   #     - ./vault/data:/vault/data
-  #     - ./vault/config/config.hcl:/vault/config/config.hcl   # Chỉ 1 file
-  #   command: server -config=/vault/config/config.hcl
+  #     - ./vault/config/config.hcl:/vault/config/config.hcl   
   #   cap_add:
   #     - IPC_LOCK
   #   environment:
@@ -126,11 +125,18 @@ services:
     image: openpolicyagent/opa:latest
     container_name: opa
     restart: always
-    # Ra lệnh cho OPA tải policy từ thư mục /policies
-    command: run --server /policies
+    # Sửa lại dòng này:
+    command:
+      - run
+      - --server
+      - --addr=0.0.0.0:8181              # HTTP API (debug)
+      - --log-level=debug                # log chi tiết
+      - --decision-logs                  # log quyết định allow/deny
+      - --set=plugins.envoy_ext_authz_grpc.addr=:8181   
+      - /policies
     ports:
       - "8181:8181"
-    # Thêm volume để lưu trữ các tệp policy (.rego)
+      - "9191:9191"
     volumes:
       - ./opa/policies:/policies
     networks:
@@ -140,7 +146,14 @@ services:
   envoy:
     image: envoyproxy/envoy:v1.30-latest
     container_name: envoy
-    restart: always
+    restart: no
+    
+    command:                           # ✅ [THÊM]
+      - envoy                          # ✅ [THÊM]
+      - -c                             # ✅ [THÊM]
+      - /etc/envoy/envoy.yaml          # ✅ [THÊM]
+      - --log-level                    # ✅ [THÊM]
+      - debug                          # ✅ [THÊM]  ← JWT log ra đây
     ports:
       - "8443:8443"   # HTTPS Gateway
       - "9901:9901"   # Envoy Admin UI

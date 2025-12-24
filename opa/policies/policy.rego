@@ -1,21 +1,36 @@
 package envoy.authz
 
-import input.attributes.request.http as http
+import input.attributes.request.http as http_request
 
-# Mặc định: CẤM
-default allow = 0
+# 1. Mặc định là CẤM (Sử dụng := cho phiên bản OPA mới)
+default allow := false
 
-# ----- QUY TẮC CHO NGƯỜI DÙNG (USER) -----
-# Cho phép nếu user có JWT hợp lệ VÀ có vai trò "admin"
+# --------------------------------------------------------
+# 2. QUY TẮC CHO NGƯỜI DÙNG (ADMIN)
+# --------------------------------------------------------
 allow if {
-    payload := io.jwt.decode(http.headers.authorization)
-    payload[1].realm_access.roles[_] == "admin"
+    # 2.1 Kiểm tra và bóc tách Token sạch (bỏ "Bearer ")
+    auth_header := http_request.headers.authorization
+    startswith(auth_header, "Bearer ")
+    token := substring(auth_header, 7, -1)
+
+    # 2.2 Giải mã lấy payload (vị trí [1])
+    [_, payload, _] := io.jwt.decode(token)
+
+    # 2.3 Truy cập đúng cấu trúc Role của Keycloak
+    payload.realm_access.roles[_] == "admin"
+
+    # 2.4 In log để kiểm tra
+    print("OPA: [ALLOW] Quyền Admin hợp lệ cho:", payload.preferred_username)
 }
 
-# ----- QUY TẮC CHO THIẾT BỊ (DEVICE) -----
-# Cho phép nếu thiết bị có mTLS hợp lệ
+# --------------------------------------------------------
+# 3. QUY TẮC CHO THIẾT BỊ (ESP32)
+# --------------------------------------------------------
 allow if {
-    # Khi dùng mTLS, Envoy sẽ gửi "CN" (Common Name) của cert
-    # Chúng ta sẽ cấp cert cho ESP32 với tên "CN=esp32_device"
-    http.headers["x-forwarded-client-cert"] == "Subject=\"CN=esp32_device\""
+    # 3.1 Dùng biến 'xfcc' rõ ràng và kiểm tra CN
+    xfcc := http_request.headers["x-forwarded-client-cert"]
+    contains(xfcc, "CN=esp32_device")
+    
+    print("OPA: [ALLOW] Thiết bị mTLS hợp lệ")
 }

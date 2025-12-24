@@ -1,0 +1,10 @@
+[ req ]
+distinguished_name = dn
+prompt = no
+
+[ dn ]
+CN = esp32_device
+
+[ v3_req ]
+keyUsage = digitalSignature
+extendedKeyUsage = clientAuth
