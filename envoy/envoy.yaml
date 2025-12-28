@@ -23,6 +23,11 @@ static_resources:
       - name: envoy.filters.network.http_connection_manager
         typed_config:
           "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+          forward_client_cert_details: SANITIZE_SET
+          set_current_client_cert_details:
+            subject: true
+            uri: true
+            dns: true
           stat_prefix: ingress_http
           access_log:
             - name: envoy.access_loggers.stdout
@@ -148,7 +153,7 @@ static_resources:
                 filename: "/etc/envoy/certs/rootCA.crt"
 
           # mTLS bật/tắt tại đây
-          require_client_certificate: false   # sếp đang test → giữ nguyên
+          require_client_certificate: true   
 
 
   # 3. ------------------

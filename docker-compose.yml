@@ -124,15 +124,14 @@ services:
   opa:
     image: openpolicyagent/opa:latest
     container_name: opa
-    restart: always
+    restart: no
     # Sửa lại dòng này:
     command:
       - run
       - --server
       - --addr=0.0.0.0:8181              # HTTP API (debug)
       - --log-level=debug                # log chi tiết
-      - --decision-logs                  # log quyết định allow/deny
-      - --set=plugins.envoy_ext_authz_grpc.addr=:8181   
+      # - --set=plugins.envoy_ext_authz_grpc.addr=:8181   ko dùng grpc nữa
       - /policies
     ports:
       - "8181:8181"
