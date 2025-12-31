@@ -1,26 +1,24 @@
-version: '3.8'
+version: "3.8"
 
 services:
+  # MQTT - Giữ nguyên vì đã chuẩn
   mqtt:
-    # hostname: mqtt.local
     image: eclipse-mosquitto:latest
     container_name: mqtt
     restart: always
     ports:
       - "8883:8883"
-      
     volumes:
       - ./mqtt/config:/mosquitto/config
       - ./mqtt/data:/mosquitto/data
       - ./mqtt/log:/mosquitto/log
-
       - ./openssl-certs/mqtt-server.crt:/mosquitto/config/certs/mqtt-server.crt
       - ./openssl-certs/mqtt-server.key:/mosquitto/config/certs/mqtt-server.key
       - ./openssl-certs/rootCA.crt:/mosquitto/config/certs/rootCA.crt
     networks:
       - iot_net
 
-  # 2️⃣ Flask Web API (Đã ổn)
+  # WEB - Sửa lỗi Mount và Env
   web:
     image: python:3.11
     build: ./web
@@ -28,8 +26,13 @@ services:
     working_dir: /app
     volumes:
       - ./web:/app
-      # - ./certweb:/app/certs/rootCA.crt
-    # command: bash -c "pip install -r requirements.txt && python app.py"
+      - ./openssl-certs:/app/certs:ro
+    environment:
+      - MQTT_CERT_PATH=/app/certs/rootCA.crt
+      - MQTT_CLIENT_CERT=/app/certs/web.crt
+      - MQTT_CLIENT_KEY=/app/certs/web.key
+      - INFLUXDB_URL=https://db:8086
+      - INFLUXDB_TOKEN=mysecrettoken
     ports:
       - "5000:5000"
     depends_on:
@@ -38,7 +41,10 @@ services:
     networks:
       - iot_net
 
-  # 3️⃣ InfluxDB (Đã ổn)
+
+  # ==================================================
+  # INFLUXDB – HTTPS
+  # ==================================================
   db:
     image: influxdb:2.7
     container_name: influxdb
@@ -52,12 +58,19 @@ services:
       DOCKER_INFLUXDB_INIT_ORG: MyHome
       DOCKER_INFLUXDB_INIT_BUCKET: SensorData
       DOCKER_INFLUXDB_INIT_ADMIN_TOKEN: mysecrettoken
+      INFLUXD_TLS_CERT: /certs/influxdb.crt
+      INFLUXD_TLS_KEY: /certs/influxdb.key
     volumes:
       - ./db:/var/lib/influxdb2
+      - ./openssl-certs/influxdb.crt:/certs/influxdb.crt
+      - ./openssl-certs/influxdb.key:/certs/influxdb.key
     networks:
       - iot_net
 
-  # 4️⃣ Grafana Dashboard (Đã ổn)
+
+  # ==================================================
+  # GRAFANA – HTTPS
+  # ==================================================
   grafana:
     image: grafana/grafana:latest
     container_name: grafana
@@ -67,107 +80,101 @@ services:
     environment:
       GF_SECURITY_ADMIN_USER: admin
       GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_SERVER_PROTOCOL: https
+      GF_SERVER_CERT_FILE: /certs/grafana.crt
+      GF_SERVER_CERT_KEY_FILE: /certs/grafana.key
     volumes:
       - ./grafana:/var/lib/grafana
+      - ./openssl-certs/grafana.crt:/certs/grafana.crt
+      - ./openssl-certs/grafana.key:/certs/grafana.key
     depends_on:
       - db
     networks:
       - iot_net
 
+
+  # ==================================================
+  # KEYCLOAK – HTTP + HTTPS (KHÔNG TẮT HTTP)
+  # ==================================================
+  # KEYCLOAK - Chuyển hẳn sang HTTPS
   keycloak:
     image: quay.io/keycloak/keycloak:latest
     container_name: keycloak
     restart: always
-    command: start
+    command: start 
     environment:
-      # Chỉ định kết nối đến CSDL "db-keycloak"
       KC_DB: postgres
       KC_DB_URL_HOST: db-keycloak
       KC_DB_URL_DATABASE: keycloak
       KC_DB_USERNAME: keycloak
       KC_DB_PASSWORD: some_secret_password
-      KC_HTTP_ENABLED: "true" # nếu dùng thật nên tắt
-      # Thông tin admin 
+      # HTTPS Config
+      KC_HTTPS_CERTIFICATE_FILE: /opt/keycloak/conf/keycloak.crt
+      KC_HTTPS_CERTIFICATE_KEY_FILE: /opt/keycloak/conf/keycloak.key
+      KC_HTTP_ENABLED: "false" 
+      KC_HOSTNAME_STRICT: "false"
       KEYCLOAK_ADMIN: admin
       KEYCLOAK_ADMIN_PASSWORD: admin
-      KC_HOSTNAME_STRICT: "false"
-      KC_HOSTNAME_STRICT_HTTPS: "false"
     ports:
-      - "8080:8080"
+      - "8444:8443" # Map ra 8444 để tránh trùng với Envoy (8443)
+    volumes:
+      - ./openssl-certs/keycloak.crt:/opt/keycloak/conf/keycloak.crt
+      - ./openssl-certs/keycloak.key:/opt/keycloak/conf/keycloak.key
+    depends_on:
+      - db-keycloak
     networks:
       - iot_net
-    depends_on:
-      - db-keycloak 
 
-  # vault:
-  #   image: hashicorp/vault:1.21.0
-  #   container_name: vault
-  #   restart: unless-stopped
-  #   ports:
-  #     - "8200:8200"
-  #   volumes:
-  #     - ./vault/data:/vault/data
-  #     - ./vault/config/config.hcl:/vault/config/config.hcl   
-  #   cap_add:
-  #     - IPC_LOCK
-  #   environment:
-  #     - VAULT_ADDR=http://0.0.0.0:8200
-  #   healthcheck:
-  #     test: ["CMD", "vault", "status", "-format=json"]
-  #     interval: 10s
-  #     timeout: 5s
-  #     retries: 5
-  #   networks:
-  #     - iot_net
 
-  # 7️⃣ OPA (ĐÃ SỬA - Thêm volume cho policy)
+  # ==================================================
+  # OPA – HTTPS
+  # ==================================================
   opa:
     image: openpolicyagent/opa:latest
     container_name: opa
     restart: no
-    # Sửa lại dòng này:
     command:
       - run
       - --server
-      - --addr=0.0.0.0:8181              # HTTP API (debug)
-      - --log-level=debug                # log chi tiết
-      # - --set=plugins.envoy_ext_authz_grpc.addr=:8181   ko dùng grpc nữa
+      - --addr=0.0.0.0:8181
+      - --tls-cert-file=/certs/opa.crt
+      - --tls-private-key-file=/certs/opa.key
+      - --log-level=debug
       - /policies
     ports:
       - "8181:8181"
       - "9191:9191"
     volumes:
       - ./opa/policies:/policies
+      - ./openssl-certs/opa.crt:/certs/opa.crt
+      - ./openssl-certs/opa.key:/certs/opa.key
     networks:
       - iot_net
 
 
+  # ==================================================
+  # ENVOY – HTTPS + mTLS (ĐÃ CÓ)
+  # ==================================================
   envoy:
     image: envoyproxy/envoy:v1.30-latest
     container_name: envoy
-    restart: no
-    
-    command:                           # ✅ [THÊM]
-      - envoy                          # ✅ [THÊM]
-      - -c                             # ✅ [THÊM]
-      - /etc/envoy/envoy.yaml          # ✅ [THÊM]
-      - --log-level                    # ✅ [THÊM]
-      - debug                          # ✅ [THÊM]  ← JWT log ra đây
+    command: ["envoy", "-c", "/etc/envoy/envoy.yaml", "--log-level", "debug"]
     ports:
-      - "8443:8443"   # HTTPS Gateway
-      - "9901:9901"   # Envoy Admin UI
+      - "8443:8443"
+      - "9901:9901"
     volumes:
       - ./envoy/envoy.yaml:/etc/envoy/envoy.yaml
-      - ./envoy/certs:/etc/envoy/certs
+      - ./openssl-certs:/etc/envoy/certs:ro
     depends_on:
-      - opa
       - web
       - keycloak
     networks:
       - iot_net
 
-  #  CSDL cho Keycloak (Dịch vụ MỚI)
-  # Dịch vụ này dùng để lưu trữ vĩnh viễn dữ liệu của Keycloak
+
+  # ==================================================
+  # POSTGRES FOR KEYCLOAK
+  # ==================================================
   db-keycloak:
     image: postgres:15
     container_name: db-keycloak
@@ -177,12 +184,11 @@ services:
       POSTGRES_USER: keycloak
       POSTGRES_PASSWORD: some_secret_password
     volumes:
-      # Lưu dữ liệu CSDL vào thư mục ./keycloak-db trên máy thật
       - ./keycloak-db:/var/lib/postgresql/data
     networks:
       - iot_net
 
-#  Mạng nội bộ kết nối tất cả container
+
 networks:
   iot_net:
     driver: bridge

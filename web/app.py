@@ -1,43 +1,52 @@
 import os
-import ssl  # <--- THÊM THƯ VIỆN SSL
+import ssl
+import time
 from flask import Flask, request, jsonify
 import paho.mqtt.client as mqtt
 from influxdb_client import InfluxDBClient, Point
 from influxdb_client.client.write_api import SYNCHRONOUS
 
 # ----------------------------
-# Khởi tạo Flask App
+# 1. Cấu hình Biến Môi trường
+# ----------------------------
+# MQTT
+MQTT_HOST = os.environ.get("MQTT_BROKER", "mqtt")
+MQTT_PORT = int(os.environ.get("MQTT_PORT", 8883))
+CA_CERT = "/app/certs/rootCA.crt"
+CLIENT_CERT = "/app/certs/client.crt"
+CLIENT_KEY = "/app/certs/client.key"
+
+# InfluxDB
+INFLUX_URL = os.environ.get("INFLUXDB_URL", "https://db:8086")
+INFLUX_TOKEN = os.environ.get("INFLUX_TOKEN", "mysecrettoken")
+INFLUX_ORG = os.environ.get("INFLUX_ORG", "MyHome")
+INFLUX_BUCKET = os.environ.get("INFLUX_BUCKET", "SensorData")
+
+# ----------------------------
+# 2. Khởi tạo Flask App
 # ----------------------------
 app = Flask(__name__)
 
 # ----------------------------
-# Cấu hình InfluxDB (Lấy từ env của InfluxDB)
+# 3. Cấu hình InfluxDB Client
 # ----------------------------
-INFLUX_URL = "http://influxdb:8086"
-INFLUX_TOKEN = os.environ.get("INFLUX_TOKEN", "mysecrettoken") # Phải khớp với token trong YML
-INFLUX_ORG = os.environ.get("INFLUX_ORG", "MyHome")
-INFLUX_BUCKET = os.environ.get("INFLUX_BUCKET", "SensorData")
-
-# Khởi tạo InfluxDB Client
 try:
-    influx_client = InfluxDBClient(url=INFLUX_URL, token=INFLUX_TOKEN, org=INFLUX_ORG)
+    # ssl_ca_cert giúp verify InfluxDB nếu InfluxDB chạy HTTPS tự ký
+    influx_client = InfluxDBClient(
+        url=INFLUX_URL, 
+        token=INFLUX_TOKEN, 
+        org=INFLUX_ORG, 
+        ssl_ca_cert=CA_CERT
+    )
     write_api = influx_client.write_api(write_options=SYNCHRONOUS)
     print("WEB: Kết nối InfluxDB thành công.", flush=True)
 except Exception as e:
     print(f"WEB: Lỗi kết nối InfluxDB: {e}", flush=True)
 
 # ----------------------------
-# Cấu hình MQTT (ĐÃ SỬA DÙNG MQTTS)
+# 4. Cấu hình MQTT (MQTTS với mTLS)
 # ----------------------------
-MQTT_HOST = "mqtt"
-MQTT_PORT = 8883  # <--- SỬA CỔNG SANG 8883 (MQTTS)
-# MQTT_USER = "admin"
-# MQTT_PASS = "123456"
-CA_CERT_PATH = "/app/certs/rootCA.crt"  # <--- Đường dẫn mount từ Docker YML
-
-# Khởi tạo MQTT Client
 mqtt_client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
-# mqtt_client.username_pw_set(MQTT_USER, MQTT_PASS)
 
 def on_connect(client, userdata, flags, rc, properties):
     if rc == 0:
@@ -51,51 +60,52 @@ def on_disconnect(client, userdata, flags, rc, properties):
 mqtt_client.on_connect = on_connect
 mqtt_client.on_disconnect = on_disconnect
 
-# --- THÊM KHỐI NÀY ĐỂ BẬT TLS/SSL ---
+# Thiết lập TLS - Sửa lỗi [Errno 21] bằng cách kiểm tra file
 try:
-    print(f"WEB: Đang bật MQTTS TLS...", flush=True)
-    mqtt_client.tls_set(
-        # ca_certs=CA_CERT_PATH,
-        # cert_reqs=ssl.CERT_REQUIRED,
-        # tls_version=ssl.PROTOCOL_TLSv1_2
-        ca_certs="/app/certs/rootCA.crt",
-        certfile="/app/certs/web.crt",
-        keyfile="/app/certs/web.key",
-        cert_reqs=ssl.CERT_REQUIRED,
-        tls_version=ssl.PROTOCOL_TLSv1_2
-    )
+    if os.path.isfile(CA_CERT) and os.path.isfile(CLIENT_CERT) and os.path.isfile(CLIENT_KEY):
+        print(f"WEB: Đang cấu hình TLS cho MQTT...", flush=True)
+        mqtt_client.tls_set(
+            ca_certs=CA_CERT,
+            certfile=CLIENT_CERT,
+            keyfile=CLIENT_KEY,
+            cert_reqs=ssl.CERT_REQUIRED,
+            tls_version=ssl.PROTOCOL_TLSv1_2
+        )
+        # Bỏ qua verify hostname nếu dùng IP/Localhost (tùy chọn)
+        mqtt_client.tls_insecure_set(True) 
+    else:
+        print(f"WEB: LỖI - Không tìm thấy các file chứng chỉ tại /app/certs/", flush=True)
 except Exception as e:
     print(f"WEB: Lỗi khi cài đặt TLS: {e}", flush=True)
-# -----------------------------------
 
-# --- ĐẶT KẾT NỐI TRONG TRY...EXCEPT ---
+# Kết nối MQTT
 try:
-    print(f"WEB: Đang kết nối tới {MQTT_HOST}:{MQTT_PORT}...", flush=True)
+    print(f"WEB: Đang kết nối tới Broker {MQTT_HOST}...", flush=True)
     mqtt_client.connect(MQTT_HOST, MQTT_PORT, 60)
-    mqtt_client.loop_start() # Chạy trong background
+    mqtt_client.loop_start() 
 except Exception as e:
-    print(f"WEB: Lỗi nghiêm trọng khi kết nối MQTT: {e}", flush=True)
-# -------------------------------------
+    print(f"WEB: Lỗi kết nối MQTT: {e}", flush=True)
 
-
-# ==========================================================
-# API ENDPOINTS (Đây là nơi Envoy sẽ chuyển request tới)
-# ==========================================================
+# ----------------------------
+# 5. API Endpoints
+# ----------------------------
 
 @app.route("/")
-def hello():
-    return "Web Service Backend đang chạy!"
+def health_check():
+    return jsonify({"status": "running", "service": "Backend Flask"}), 200
 
-# --- API cho THIẾT BỊ (ESP32) gửi dữ liệu LÊN ---
+# --- API nhận dữ liệu từ ESP32 (Thông qua Envoy mTLS) ---
 @app.route("/api/device/data", methods=["POST"])
-def device_data():
+def receive_data():
     try:
         data = request.json
-        print(f"WEB: Nhận dữ liệu từ thiết bị: {data}", flush=True)
+        # Lấy ID thiết bị từ Header X-Forwarded-Client-Cert do Envoy cung cấp
+        cert_header = request.headers.get('X-Forwarded-Client-Cert', '')
+        device_id = "unknown"
+        if "CN=" in cert_header:
+            device_id = cert_header.split("CN=")[1].split(",")[0].split(";")[0].strip('"')
 
-        # Lấy tên thiết bị từ header mà Envoy thêm vào
-        device_cn = request.headers.get('X-Forwarded-Client-Cert', 'UNKNOWN')
-        device_id = device_cn.split('CN=')[-1].split('"')[0] if 'CN=' in device_cn else 'unknown'
+        print(f"WEB: Nhận dữ liệu từ {device_id}: {data}", flush=True)
 
         # Ghi vào InfluxDB
         point = Point("sensor_data") \
@@ -105,40 +115,36 @@ def device_data():
         
         write_api.write(bucket=INFLUX_BUCKET, org=INFLUX_ORG, record=point)
         
-        return jsonify({"status": "success", "message": "Đã ghi vào DB"}), 200
-
+        return jsonify({"status": "success", "device_id": device_id}), 200
     except Exception as e:
-        print(f"WEB: Lỗi xử lý dữ liệu: {e}", flush=True)
         return jsonify({"status": "error", "message": str(e)}), 500
 
-# --- API cho NGƯỜI DÙNG (Admin) gửi lệnh XUỐNG ---
+# --- API User gửi lệnh điều khiển (Thông qua Envoy JWT) ---
 @app.route("/api/user/control/relay", methods=["POST"])
-def user_control():
+def send_control():
     try:
         data = request.json
-        device_id = data.get("device_id") # VD: "esp32_device"
-        action = data.get("action")       # VD: "ON" hoặc "OFF"
+        target_device = data.get("device_id")
+        action = data.get("action") # ON/OFF
 
-        if not device_id or not action:
-            return jsonify({"status": "error", "message": "Thiếu device_id hoặc action"}), 400
+        if not target_device or not action:
+            return jsonify({"status": "error", "message": "Missing data"}), 400
 
-        # Gửi lệnh điều khiển qua MQTT
-        topic = f"iot/device/{device_id}/control"
+        # Publish lệnh tới MQTT
+        topic = f"iot/device/{target_device}/control"
         payload = f"{{\"cmd\": \"{action}\"}}"
         
-        print(f"WEB: Gửi lệnh qua MQTT: Topic={topic}, Payload={payload}", flush=True)
-        mqtt_client.publish(topic, payload)
-        
-        return jsonify({"status": "success", "message": "Đã gửi lệnh"}), 200
-        
+        result = mqtt_client.publish(topic, payload)
+        result.wait_for_publish() # Đảm bảo đã gửi xong
+
+        print(f"WEB: Đã gửi lệnh {action} tới {target_device}", flush=True)
+        return jsonify({"status": "command_sent", "topic": topic}), 200
     except Exception as e:
-        print(f"WEB: Lỗi gửi lệnh: {e}", flush=True)
         return jsonify({"status": "error", "message": str(e)}), 500
 
 # ----------------------------
-# Chạy máy chủ Flask
+# 6. Chạy App
 # ----------------------------
 if __name__ == "__main__":
-    print("WEB: Khởi động máy chủ Flask...", flush=True)
+    # Flask chạy ở port 5000, Envoy sẽ gọi vào đây
     app.run(host="0.0.0.0", port=5000, debug=False)
-    

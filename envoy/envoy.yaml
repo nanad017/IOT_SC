@@ -16,112 +16,75 @@ static_resources:
     address:
       socket_address: 
         address: 0.0.0.0
-        port_value: 8443   # Envoy HTTPS
+        port_value: 8443   # Envoy HTTPS chính
 
     filter_chains:
     - filters:
       - name: envoy.filters.network.http_connection_manager
         typed_config:
           "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+          stat_prefix: ingress_http
           forward_client_cert_details: SANITIZE_SET
           set_current_client_cert_details:
             subject: true
             uri: true
             dns: true
-          stat_prefix: ingress_http
+
           access_log:
             - name: envoy.access_loggers.stdout
               typed_config:
                 "@type": type.googleapis.com/envoy.extensions.access_loggers.stream.v3.StdoutAccessLog
-                log_format:
-                  text_format: |
-                    [%START_TIME%]
-                    method=%REQ(:METHOD)%
-                    path=%REQ(X-ENVOY-ORIGINAL-PATH?:PATH)%
-                    status=%RESPONSE_CODE%
-                    details=%RESPONSE_CODE_DETAILS%
-                    jwt_error=%DYNAMIC_METADATA(envoy.filters.http.jwt_authn:error)%
-                    request_id=%REQ(X-REQUEST-ID)%
-          # ============================================================
-          # HTTP FILTERS (đã sửa đúng thứ tự)
-          # ============================================================
-          http_filters:
 
+          http_filters:
           # ------------------------------------------------------------
-          # 1) JWT AUTHENTICATION (phải chạy TRƯỚC OPA)
+          # 1) JWT AUTHENTICATION (Xác thực Token từ Keycloak)
           # ------------------------------------------------------------
           - name: envoy.filters.http.jwt_authn
             typed_config:
               "@type": type.googleapis.com/envoy.extensions.filters.http.jwt_authn.v3.JwtAuthentication
               providers:
                 keycloak_provider:
-                  issuer: http://localhost:8080/realms/IOT_SC   # <-- đúng realm
-                  audiences:
-                    - account
-
+                  issuer: https://localhost:8444/realms/IOT_SC   # URL thực tế khi login
                   remote_jwks:
                     http_uri:
-                      uri: http://localhost:8080/realms/IOT_SC/protocol/openid-connect/certs   # <-- sửa đúng JWKS
+                      # Kết nối nội bộ tới Keycloak qua HTTPS (Port 8443)
+                      uri: https://keycloak:8443/realms/IOT_SC/protocol/openid-connect/certs
                       cluster: keycloak_service
-                      timeout: 1s
-
-              # Chỉ bắt JWT trên đường dẫn /api/user/*
+                      timeout: 2s
+                  audiences:
+                    - account
               rules:
                 - match: { prefix: "/api/user" }
                   requires:
                     provider_name: keycloak_provider
 
-
           # ------------------------------------------------------------
-          # 2) OPA AUTHORIZATION (chạy SAU khi JWT OK)
+          # 2) OPA AUTHORIZATION (Kiểm tra quyền)
           # ------------------------------------------------------------
-          # - name: envoy.filters.http.ext_authz 
-          #   typed_config:
-          #     "@type": type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthz
-          #     transport_api_version: V3
-          #     with_request_body:
-          #       max_request_bytes: 8192
-          #       allow_partial_message: true
-
-          #     failure_mode_allow: false   # OPA chết → CHẶN
-          #     grpc_service:
-          #       envoy_grpc:
-          #         cluster_name: opa_service
-          #       timeout: 0.5s
           - name: envoy.filters.http.ext_authz
             typed_config:
               "@type": type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthz
               transport_api_version: V3
-
-              failure_mode_allow: false           # ✅ [GIỮ]
-
-              http_service:                       # ✅ [THÊM]
-                server_uri:                       # ✅ [THÊM]
-                  uri: http://opa:8181            # ✅ [THÊM]
-                  cluster: opa_service            # ✅ [THÊM]
-                  timeout: 0.5s                   # ✅ [THÊM]
-
-                path_prefix: /v1/data/envoy/authz # ✅ [THÊM]
-
-                authorization_request:            # ✅ [THÊM]
-                  allowed_headers:                # ✅ [THÊM]
+              failure_mode_allow: false # OPA lỗi -> Chặn request
+              http_service:
+                server_uri:
+                  uri: https://opa:8181
+                  cluster: opa_service
+                  timeout: 0.5s
+                path_prefix: /v1/data/envoy/authz # Đường dẫn policy trong OPA
+                authorization_request:
+                  allowed_headers:
                     patterns:
-                      - exact: authorization      # ✅ [THÊM]
-                      - exact: path               # ✅ [THÊM]
-                      - exact: method             # ✅ [THÊM]
-
+                      - exact: authorization
+                      - exact: x-forwarded-client-cert # Gửi metadata Cert sang OPA
 
           # ------------------------------------------------------------
-          # 3) ROUTER (luôn để cuối)
+          # 3) ROUTER
           # ------------------------------------------------------------
           - name: envoy.filters.http.router
             typed_config:
               "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
 
-
-          # ============================================================
-          # ROUTING
-          # ============================================================
           route_config:
             name: local_route
             virtual_hosts:
@@ -130,80 +93,75 @@ static_resources:
               routes:
               - match: { prefix: "/" }
                 route:
-                  cluster: web_service    # chuyển đến Flask (web)
-
+                  cluster: web_service
 
       # -----------------------------------------------------------
-      # TLS / mTLS CONFIG
+      # TLS / mTLS CONFIG (Người dùng kết nối tới Envoy)
       # -----------------------------------------------------------
       transport_socket:
         name: envoy.transport_sockets.tls
         typed_config:
           "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.DownstreamTlsContext
-
           common_tls_context:
             tls_certificates:
-              - certificate_chain:
-                  filename: "/etc/envoy/certs/envoy-proxy.crt"
-                private_key:
-                  filename: "/etc/envoy/certs/envoy-proxy.key"
-
+              - certificate_chain: { filename: "/etc/envoy/certs/envoy-proxy.crt" }
+                private_key: { filename: "/etc/envoy/certs/envoy-proxy.key" }
             validation_context:
-              trusted_ca:
-                filename: "/etc/envoy/certs/rootCA.crt"
-
-          # mTLS bật/tắt tại đây
-          require_client_certificate: true   
-
+              trusted_ca: { filename: "/etc/envoy/certs/rootCA.crt" }
+          require_client_certificate: true # Bật mTLS
 
   # 3. ------------------
-  # CLUSTERS
+  # CLUSTERS (Các dịch vụ phía sau)
   # ------------------
   clusters:
-
-  # Flask Web Backend
+  # Flask Web Backend (HTTP thường)
   - name: web_service
     connect_timeout: 0.25s
-    type: logical_dns
-    dns_lookup_family: V4_ONLY
+    type: STRICT_DNS
     load_assignment:
       cluster_name: web_service
       endpoints:
       - lb_endpoints:
         - endpoint:
             address:
-              socket_address: 
-                address: web
-                port_value: 5000
+              socket_address: { address: web, port_value: 5000 }
 
-  # OPA Cluster (gRPC)
+  # OPA Cluster
   - name: opa_service
     connect_timeout: 0.25s
-    type: logical_dns
-    dns_lookup_family: V4_ONLY
-    # http2_protocol_options: {}       # bắt buộc vì OPA dùng gRPC ext_authz
+    type: STRICT_DNS
     load_assignment:
       cluster_name: opa_service
       endpoints:
       - lb_endpoints:
         - endpoint:
             address:
-              socket_address:
-                address: opa
-                port_value: 8181    # đúng port của OPA
+              socket_address: { address: opa, port_value: 8181 }
+    transport_socket:
+      name: envoy.transport_sockets.tls
+      typed_config:
+        "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext
+        common_tls_context:
+          validation_context:
+            trusted_ca:
+              filename: "/etc/envoy/certs/rootCA.crt"
 
-
-  # Keycloak Cluster
+  # Keycloak Cluster (HTTPS Upstream)
   - name: keycloak_service
     connect_timeout: 1s
-    type: logical_dns
-    dns_lookup_family: V4_ONLY
+    type: STRICT_DNS
     load_assignment:
       cluster_name: keycloak_service
       endpoints:
       - lb_endpoints:
         - endpoint:
             address:
-              socket_address:
-                address: keycloak
-                port_value: 8080
+              socket_address: { address: keycloak, port_value: 8443 } # Port nội bộ HTTPS của Keycloak
+    # Thêm đoạn này để Envoy nói chuyện HTTPS với Keycloak
+    transport_socket:
+      name: envoy.transport_sockets.tls
+      typed_config:
+        "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext
+        common_tls_context:
+          validation_context:
+            trusted_ca: { filename: "/etc/envoy/certs/rootCA.crt" }
