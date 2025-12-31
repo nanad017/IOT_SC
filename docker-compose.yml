@@ -58,12 +58,15 @@ services:
       DOCKER_INFLUXDB_INIT_ORG: MyHome
       DOCKER_INFLUXDB_INIT_BUCKET: SensorData
       DOCKER_INFLUXDB_INIT_ADMIN_TOKEN: mysecrettoken
+      INFLUXD_TLS_CA: /certs/rootCA.crt
+      INFLUXD_TLS_CLIENT_AUTH: "require"
       INFLUXD_TLS_CERT: /certs/influxdb.crt
       INFLUXD_TLS_KEY: /certs/influxdb.key
     volumes:
       - ./db:/var/lib/influxdb2
       - ./openssl-certs/influxdb.crt:/certs/influxdb.crt
       - ./openssl-certs/influxdb.key:/certs/influxdb.key
+      - ./openssl-certs/rootCA.crt:/certs/rootCA.crt
     networks:
       - iot_net
 
@@ -139,6 +142,7 @@ services:
       - --addr=0.0.0.0:8181
       - --tls-cert-file=/certs/opa.crt
       - --tls-private-key-file=/certs/opa.key
+      - --tls-ca-cert-file=/certs/rootCA.crt
       - --log-level=debug
       - /policies
     ports:
@@ -148,6 +152,7 @@ services:
       - ./opa/policies:/policies
       - ./openssl-certs/opa.crt:/certs/opa.crt
       - ./openssl-certs/opa.key:/certs/opa.key
+      - ./openssl-certs/rootCA.crt:/certs/rootCA.crt
     networks:
       - iot_net
 
@@ -168,6 +173,7 @@ services:
     depends_on:
       - web
       - keycloak
+      - opa
     networks:
       - iot_net
 
@@ -182,9 +188,14 @@ services:
     environment:
       POSTGRES_DB: keycloak
       POSTGRES_USER: keycloak
+      # 👇 DÒNG THÊM MỚI: Bật chế độ bắt buộc xác thực Client Certificate
+      KC_HTTPS_CLIENT_AUTH: required
+      # 👇 DÒNG THÊM MỚI: Đường dẫn tới file Root CA để Keycloak verify Envoy
+      KC_HTTPS_TRUST_STORE_FILE: /opt/keycloak/conf/rootCA.crt
       POSTGRES_PASSWORD: some_secret_password
     volumes:
       - ./keycloak-db:/var/lib/postgresql/data
+      - ./openssl-certs/rootCA.crt:/opt/keycloak/conf/rootCA.crt
     networks:
       - iot_net
 

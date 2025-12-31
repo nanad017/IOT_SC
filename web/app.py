@@ -146,15 +146,34 @@ def send_control():
 # 6. Chạy App
 # ----------------------------
 if __name__ == "__main__":
-    print("WEB: Khởi động máy chủ Flask bảo mật (HTTPS)...", flush=True)
+    print("WEB: Khởi động máy chủ Flask với chế độ mTLS (Zero Trust)...", flush=True)
     
-    # Đường dẫn tới cert mà bạn đã mount vào container
+    # Đường dẫn tới các file chứng chỉ đã mount
     cert_file = "/app/certs/web.crt"
     key_file = "/app/certs/web.key"
+    ca_file = "/app/certs/rootCA.crt" # Cần thiết để xác thực Client (Envoy)
     
-    if os.path.exists(cert_file) and os.path.exists(key_file):
-        # Chạy Flask với SSL Context
-        app.run(host="0.0.0.0", port=5000, debug=False, ssl_context=(cert_file, key_file))
+    if os.path.exists(cert_file) and os.path.exists(key_file) and os.path.exists(ca_file):
+        try:
+            # 1. Tạo SSL Context chuyên dụng cho xác thực Client
+            context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+            
+            # 2. Load chứng chỉ của chính Server (Web Backend)
+            context.load_cert_chain(certfile=cert_file, keyfile=key_file)
+            
+            # 3. Load Root CA để kiểm tra tính hợp lệ của chứng chỉ Client gửi tới
+            context.load_verify_locations(cafile=ca_file)
+            
+            # 4. Kích hoạt chế độ mTLS: Bắt buộc Client phải trình chứng chỉ (CERT_REQUIRED)
+            context.verify_mode = ssl.CERT_REQUIRED
+            
+            print("WEB: mTLS đã được kích hoạt thành công.", flush=True)
+            app.run(host="0.0.0.0", port=5000, debug=False, ssl_context=context)
+            
+        except Exception as e:
+            print(f"WEB: [LỖI] Cấu hình SSL thất bại: {e}", flush=True)
+            app.run(host="0.0.0.0", port=5000, debug=False)
     else:
-        print("WEB: [LỖI] Không tìm thấy Cert để chạy HTTPS, quay lại HTTP!", flush=True)
+        print("WEB: [LỖI] Thiếu file chứng chỉ (web.crt, web.key hoặc rootCA.crt)!", flush=True)
+        # Trong môi trường bảo mật cao, bạn có thể chọn dừng app thay vì quay lại HTTP
         app.run(host="0.0.0.0", port=5000, debug=False)
