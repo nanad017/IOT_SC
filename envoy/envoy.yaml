@@ -125,7 +125,14 @@ static_resources:
         - endpoint:
             address:
               socket_address: { address: web, port_value: 5000 }
-
+    transport_socket:
+          name: envoy.transport_sockets.tls
+          typed_config:
+            "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext
+            common_tls_context:
+              validation_context:
+                trusted_ca:
+                  filename: "/etc/envoy/certs/rootCA.crt"
   # OPA Cluster
   - name: opa_service
     connect_timeout: 0.25s

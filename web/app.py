@@ -146,5 +146,15 @@ def send_control():
 # 6. Chạy App
 # ----------------------------
 if __name__ == "__main__":
-    # Flask chạy ở port 5000, Envoy sẽ gọi vào đây
-    app.run(host="0.0.0.0", port=5000, debug=False)
+    print("WEB: Khởi động máy chủ Flask bảo mật (HTTPS)...", flush=True)
+    
+    # Đường dẫn tới cert mà bạn đã mount vào container
+    cert_file = "/app/certs/web.crt"
+    key_file = "/app/certs/web.key"
+    
+    if os.path.exists(cert_file) and os.path.exists(key_file):
+        # Chạy Flask với SSL Context
+        app.run(host="0.0.0.0", port=5000, debug=False, ssl_context=(cert_file, key_file))
+    else:
+        print("WEB: [LỖI] Không tìm thấy Cert để chạy HTTPS, quay lại HTTP!", flush=True)
+        app.run(host="0.0.0.0", port=5000, debug=False)
