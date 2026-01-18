@@ -1,22 +1,16 @@
-# 1. ------------------
-# Admin UI để debug Envoy
-# ------------------
 admin:
   address:
     socket_address:
       address: 0.0.0.0
       port_value: 9901
 
-# 2. ------------------
-# Listeners & Clusters
-# ------------------
 static_resources:
   listeners:
   - name: listener_https
     address:
-      socket_address: 
+      socket_address:
         address: 0.0.0.0
-        port_value: 8443   # Envoy HTTPS chính
+        port_value: 8443
 
     filter_chains:
     - filters:
@@ -36,18 +30,14 @@ static_resources:
                 "@type": type.googleapis.com/envoy.extensions.access_loggers.stream.v3.StdoutAccessLog
 
           http_filters:
-          # ------------------------------------------------------------
-          # 1) JWT AUTHENTICATION (Xác thực Token từ Keycloak)
-          # ------------------------------------------------------------
           - name: envoy.filters.http.jwt_authn
             typed_config:
               "@type": type.googleapis.com/envoy.extensions.filters.http.jwt_authn.v3.JwtAuthentication
               providers:
                 keycloak_provider:
-                  issuer: https://localhost:8444/realms/IOT_SC   # URL thực tế khi login
+                  issuer: https://localhost:8444/realms/IOT_SC
                   remote_jwks:
                     http_uri:
-                      # Kết nối nội bộ tới Keycloak qua HTTPS (Port 8443)
                       uri: https://keycloak:8443/realms/IOT_SC/protocol/openid-connect/certs
                       cluster: keycloak_service
                       timeout: 2s
@@ -58,29 +48,23 @@ static_resources:
                   requires:
                     provider_name: keycloak_provider
 
-          # ------------------------------------------------------------
-          # 2) OPA AUTHORIZATION (Kiểm tra quyền)
-          # ------------------------------------------------------------
           - name: envoy.filters.http.ext_authz
             typed_config:
               "@type": type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthz
               transport_api_version: V3
-              failure_mode_allow: false # OPA lỗi -> Chặn request
+              failure_mode_allow: false
               http_service:
                 server_uri:
                   uri: https://opa:8181
                   cluster: opa_service
                   timeout: 0.5s
-                path_prefix: /v1/data/envoy/authz # Đường dẫn policy trong OPA
+                path_prefix: /v1/data/envoy/authz
                 authorization_request:
                   allowed_headers:
                     patterns:
                       - exact: authorization
-                      - exact: x-forwarded-client-cert # Gửi metadata Cert sang OPA
+                      - exact: x-forwarded-client-cert
 
-          # ------------------------------------------------------------
-          # 3) ROUTER
-          # ------------------------------------------------------------
           - name: envoy.filters.http.router
             typed_config:
               "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
@@ -95,9 +79,6 @@ static_resources:
                 route:
                   cluster: web_service
 
-      # -----------------------------------------------------------
-      # TLS / mTLS CONFIG (Người dùng kết nối tới Envoy)
-      # -----------------------------------------------------------
       transport_socket:
         name: envoy.transport_sockets.tls
         typed_config:
@@ -108,13 +89,9 @@ static_resources:
                 private_key: { filename: "/etc/envoy/certs/envoy-proxy.key" }
             validation_context:
               trusted_ca: { filename: "/etc/envoy/certs/rootCA.crt" }
-          require_client_certificate: true # Bật mTLS
+          require_client_certificate: true
 
-  # 3. ------------------
-  # CLUSTERS (Các dịch vụ phía sau)
-  # ------------------
   clusters:
-  # Flask Web Backend (HTTP thường)
   - name: web_service
     connect_timeout: 0.25s
     type: STRICT_DNS
@@ -135,7 +112,7 @@ static_resources:
               private_key: { filename: "/etc/envoy/certs/envoy-proxy.key" }
           validation_context:
             trusted_ca: { filename: "/etc/envoy/certs/rootCA.crt" }
-  # OPA Cluster
+
   - name: opa_service
     connect_timeout: 0.25s
     type: STRICT_DNS
@@ -147,17 +124,16 @@ static_resources:
             address:
               socket_address: { address: opa, port_value: 8181 }
     transport_socket:
-          name: envoy.transport_sockets.tls
-          typed_config:
-            "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext
-            common_tls_context:
-              tls_certificates:
-                - certificate_chain: { filename: "/etc/envoy/certs/envoy-proxy.crt" }
-                  private_key: { filename: "/etc/envoy/certs/envoy-proxy.key" }
-              validation_context:
-                trusted_ca: { filename: "/etc/envoy/certs/rootCA.crt" }
+      name: envoy.transport_sockets.tls
+      typed_config:
+        "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext
+        common_tls_context:
+          tls_certificates:
+            - certificate_chain: { filename: "/etc/envoy/certs/envoy-proxy.crt" }
+              private_key: { filename: "/etc/envoy/certs/envoy-proxy.key" }
+          validation_context:
+            trusted_ca: { filename: "/etc/envoy/certs/rootCA.crt" }
 
-  # Keycloak Cluster (HTTPS Upstream)
   - name: keycloak_service
     connect_timeout: 1s
     type: STRICT_DNS
@@ -167,8 +143,7 @@ static_resources:
       - lb_endpoints:
         - endpoint:
             address:
-              socket_address: { address: keycloak, port_value: 8443 } # Port nội bộ HTTPS của Keycloak
-    # Thêm đoạn này để Envoy nói chuyện HTTPS với Keycloak
+              socket_address: { address: keycloak, port_value: 8443 }
     transport_socket:
       name: envoy.transport_sockets.tls
       typed_config:
@@ -178,4 +153,4 @@ static_resources:
             - certificate_chain: { filename: "/etc/envoy/certs/envoy-proxy.crt" }
               private_key: { filename: "/etc/envoy/certs/envoy-proxy.key" }
           validation_context:
-            trusted_ca: { filename: "/etc/envoy/certs/rootCA.crt" } 
+            trusted_ca: { filename: "/etc/envoy/certs/rootCA.crt" }

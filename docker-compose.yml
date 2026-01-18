@@ -1,7 +1,6 @@
 version: "3.8"
 
 services:
-  # MQTT - Giữ nguyên vì đã chuẩn
   mqtt:
     image: eclipse-mosquitto:latest
     container_name: mqtt
@@ -18,7 +17,6 @@ services:
     networks:
       - iot_net
 
-  # WEB - Sửa lỗi Mount và Env
   web:
     image: python:3.11
     build: ./web
@@ -41,10 +39,6 @@ services:
     networks:
       - iot_net
 
-
-  # ==================================================
-  # INFLUXDB – HTTPS
-  # ==================================================
   db:
     image: influxdb:2.7
     container_name: influxdb
@@ -70,10 +64,6 @@ services:
     networks:
       - iot_net
 
-
-  # ==================================================
-  # GRAFANA – HTTPS
-  # ==================================================
   grafana:
     image: grafana/grafana:latest
     container_name: grafana
@@ -95,31 +85,25 @@ services:
     networks:
       - iot_net
 
-
-  # ==================================================
-  # KEYCLOAK – HTTP + HTTPS (KHÔNG TẮT HTTP)
-  # ==================================================
-  # KEYCLOAK - Chuyển hẳn sang HTTPS
   keycloak:
     image: quay.io/keycloak/keycloak:latest
     container_name: keycloak
     restart: always
-    command: start 
+    command: start
     environment:
       KC_DB: postgres
       KC_DB_URL_HOST: db-keycloak
       KC_DB_URL_DATABASE: keycloak
       KC_DB_USERNAME: keycloak
       KC_DB_PASSWORD: some_secret_password
-      # HTTPS Config
       KC_HTTPS_CERTIFICATE_FILE: /opt/keycloak/conf/keycloak.crt
       KC_HTTPS_CERTIFICATE_KEY_FILE: /opt/keycloak/conf/keycloak.key
-      KC_HTTP_ENABLED: "false" 
+      KC_HTTP_ENABLED: "false"
       KC_HOSTNAME_STRICT: "false"
       KEYCLOAK_ADMIN: admin
       KEYCLOAK_ADMIN_PASSWORD: admin
     ports:
-      - "8444:8443" # Map ra 8444 để tránh trùng với Envoy (8443)
+      - "8444:8443"
     volumes:
       - ./openssl-certs/keycloak.crt:/opt/keycloak/conf/keycloak.crt
       - ./openssl-certs/keycloak.key:/opt/keycloak/conf/keycloak.key
@@ -128,10 +112,6 @@ services:
     networks:
       - iot_net
 
-
-  # ==================================================
-  # OPA – HTTPS
-  # ==================================================
   opa:
     image: openpolicyagent/opa:latest
     container_name: opa
@@ -156,10 +136,6 @@ services:
     networks:
       - iot_net
 
-
-  # ==================================================
-  # ENVOY – HTTPS + mTLS (ĐÃ CÓ)
-  # ==================================================
   envoy:
     image: envoyproxy/envoy:v1.30-latest
     container_name: envoy
@@ -177,10 +153,6 @@ services:
     networks:
       - iot_net
 
-
-  # ==================================================
-  # POSTGRES FOR KEYCLOAK
-  # ==================================================
   db-keycloak:
     image: postgres:15
     container_name: db-keycloak
@@ -188,9 +160,7 @@ services:
     environment:
       POSTGRES_DB: keycloak
       POSTGRES_USER: keycloak
-      # 👇 DÒNG THÊM MỚI: Bật chế độ bắt buộc xác thực Client Certificate
       KC_HTTPS_CLIENT_AUTH: required
-      # 👇 DÒNG THÊM MỚI: Đường dẫn tới file Root CA để Keycloak verify Envoy
       KC_HTTPS_TRUST_STORE_FILE: /opt/keycloak/conf/rootCA.crt
       POSTGRES_PASSWORD: some_secret_password
     volumes:
@@ -198,7 +168,6 @@ services:
       - ./openssl-certs/rootCA.crt:/opt/keycloak/conf/rootCA.crt
     networks:
       - iot_net
-
 
 networks:
   iot_net:
